@@ -9,6 +9,15 @@ import pickle
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import datetime
+import shutil
+import sys
+import time
+import path
+import torch
+import torch.nn.functional as F
+import sys
+
 
 from scipy.sparse import csr_matrix
 from pathlib import Path
@@ -27,7 +36,69 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC, SVC
 from sklearn.tree import DecisionTreeClassifier
 
+parent_dir = Path.cwd().parent.resolve()
 
+if str(parent_dir) not in sys.path:
+    sys.path.insert(0, str(parent_dir))
+
+from data import data
+from logger import get_logger
+from prepare import accuracy, fetch_data, initialise
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from argparse import Namespace
+
+args = Namespace(
+    data="coauthorship",
+    dataset="dblp",
+    model_name="UniGCNII",
+    first_aggregate="mean",
+    second_aggregate="sum",
+    add_self_loop=False,
+    use_norm=False,
+    activation="relu",
+    nlayer=64,
+    nhid=8,
+    nhead=8,
+    dropout=0.6,
+    input_drop=0.6,
+    attn_drop=0.6,
+    lr=0.01,
+    wd=5e-4,
+    epochs=1000,
+    n_runs=10,
+    gpu=0,
+    seed=1,
+    patience=150,
+    nostdout=False,
+    split=1,
+    out_dir="runs/elbow_labeled",
+)
+
+# Override configuration values here when needed, for example:
+# args.epochs = 200
+# args.n_runs = 10
+
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+os.environ["PYTHONHASHSEED"] = str(args.seed)
+
+dataname = f"{args.data}_{args.dataset}"
+out_dir = path.Path(
+    f"./{args.out_dir}/{args.model_name}_{args.nlayer}_{dataname}/seed_{args.seed}"
+)
+
+if out_dir.exists():
+    shutil.rmtree(out_dir)
+out_dir.makedirs_p()
+
+baselogger = get_logger("base logger", f"{out_dir}/logging.log", not args.nostdout)
+resultlogger = get_logger("result logger", f"{out_dir}/result.log", not args.nostdout)
+baselogger.info(args)
+resultlogger.info(args)
 
 def onehot(labels):
     """
@@ -776,6 +847,14 @@ def train_and_extract_features(feature_matrix, Y, G, args):
     best_test_accs = []
     run_results = []
     running_times = []
+    dataname = f"{args.data}_{args.dataset}"
+    out_dir = path.Path(
+        f"./{args.out_dir}/{args.model_name}_{args.nlayer}_{dataname}/seed_{args.seed}"
+    )
+    
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.makedirs_p()
     for run in range(1, args.n_runs + 1):
         run_dir = out_dir / f"{run}"
         run_dir.makedirs_p()
@@ -1050,3 +1129,13 @@ def evaluate_classical_models(feature_sets, Y, args):
                 )
 
     return pd.DataFrame(records), predictions
+
+dataset_directory = "../data/coauthorship/dblp"
+dataset = load_data(dataset_directory)
+
+feature_matrix, patterns, frequencies = build_feature_matrix(
+    data=dataset,
+    pattern_file="/data/cs.aau.dk/tungkvt/Nhi/FreSCo_label/output/node_classification/AMiner/rerun1/AMiner_freq_100_minDim_0_maxSize_12",
+    image_file="/data/cs.aau.dk/tungkvt/Nhi/FreSCo_label/output/node_classification/AMiner/rerun1/AMiner_freq_100_minDim_0_maxSize_12occMap",
+    min_frequency=200,
+)

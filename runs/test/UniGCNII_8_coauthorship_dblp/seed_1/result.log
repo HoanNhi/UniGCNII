@@ -1,2 +1,0 @@
-Namespace(data='coauthorship', dataset='dblp', model_name='UniGCNII', first_aggregate='mean', second_aggregate='sum', add_self_loop=False, use_norm=False, activation='relu', nlayer=8, nhid=8, nhead=8, dropout=0.6, input_drop=0.6, attn_drop=0.6, lr=0.01, wd=0.0005, epochs=200, n_runs=10, gpu=0, seed=1, patience=200, nostdout=False, split=1, out_dir='runs/test')
-Run 1/10, best test accuracy: 31.42, acc(last): 28.25, total time: 6.19s

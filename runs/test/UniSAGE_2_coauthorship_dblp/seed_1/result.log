@@ -1,0 +1,13 @@
+Namespace(data='coauthorship', dataset='dblp', model_name='UniSAGE', first_aggregate='mean', second_aggregate='sum', add_self_loop=False, use_norm=False, activation='relu', nlayer=2, nhid=8, nhead=8, dropout=0.6, input_drop=0.6, attn_drop=0.6, lr=0.01, wd=0.0005, epochs=200, n_runs=10, gpu=0, seed=1, patience=200, nostdout=False, split=1, out_dir='runs/test')
+Run 1/10, best test accuracy: 91.96, acc(last): 91.21, total time: 1.48s
+Run 2/10, best test accuracy: 91.80, acc(last): 91.61, total time: 1.07s
+Run 3/10, best test accuracy: 91.88, acc(last): 91.53, total time: 1.09s
+Run 4/10, best test accuracy: 91.97, acc(last): 91.63, total time: 1.05s
+Run 5/10, best test accuracy: 91.87, acc(last): 91.16, total time: 1.08s
+Run 6/10, best test accuracy: 91.97, acc(last): 91.11, total time: 1.07s
+Run 7/10, best test accuracy: 91.90, acc(last): 91.46, total time: 1.06s
+Run 8/10, best test accuracy: 91.86, acc(last): 91.57, total time: 1.06s
+Run 9/10, best test accuracy: 91.97, acc(last): 91.58, total time: 1.08s
+Run 10/10, best test accuracy: 91.97, acc(last): 91.27, total time: 1.08s
+Average final test accuracy: 91.41196072101593 ± 0.1918107965990695
+Average best test accuracy: 91.91496849060059 ± 0.05871854838095792

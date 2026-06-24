@@ -29,7 +29,7 @@ from sklearn.metrics import silhouette_score
 from sklearn.model_selection import train_test_split
 from scipy import sparse
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -1045,12 +1045,32 @@ def make_classifiers(seed):
     }
 
 
-def evaluate_classical_models(feature_sets, Y, args):
+def classification_splits(args):
+    """Load the train/test indices once for each configured run."""
+    splits = {}
+    original_split = args.split
+
+    try:
+        for run in range(1, args.n_runs + 1):
+            args.split = run
+            _, train_idx, test_idx = data.load(args)
+            splits[run] = (
+                np.asarray(train_idx, dtype=np.int64),
+                np.asarray(test_idx, dtype=np.int64),
+            )
+    finally:
+        args.split = original_split
+
+    return splits
+
+
+def evaluate_classical_models(feature_sets, Y, args, splits=None):
     """
-    Fit logistic regression, a linear SVM, KNN, and a decision tree for
-    every feature set and every args.split run. The train/test indices are
-    loaded exactly once per run and reused by all feature sets and models,
-    making the comparisons directly comparable.
+    Fit the classical models for every feature set and run.
+
+    The same train/test split is reused by all feature sets and models in a
+    run. Pass precomputed ``splits`` when evaluating several frequency
+    thresholds so every threshold is compared on exactly the same data.
 
     Returns:
         results_df: one row per feature set, classifier, and run.
@@ -1067,14 +1087,17 @@ def evaluate_classical_models(feature_sets, Y, args):
     if y.ndim != 1:
         raise ValueError("Y must contain one class label per vertex")
 
+    if splits is None:
+        splits = classification_splits(args)
+
     records = []
     predictions = {}
 
     for run in range(1, args.n_runs + 1):
-        args.split = run
-        _, train_idx, test_idx = data.load(args)
-        train_idx = np.asarray(train_idx, dtype=np.int64)
-        test_idx = np.asarray(test_idx, dtype=np.int64)
+        if run not in splits:
+            raise KeyError(f"No train/test split was supplied for run {run}")
+
+        train_idx, test_idx = splits[run]
 
         for feature_name, feature_source in feature_sets.items():
             X = as_sklearn_feature_matrix(
@@ -1104,6 +1127,18 @@ def evaluate_classical_models(feature_sets, Y, args):
                     y[test_idx],
                     test_prediction,
                 )
+                train_macro_f1 = f1_score(
+                    y[train_idx],
+                    train_prediction,
+                    average="macro",
+                    zero_division=0,
+                )
+                test_macro_f1 = f1_score(
+                    y[test_idx],
+                    test_prediction,
+                    average="macro",
+                    zero_division=0,
+                )
 
                 records.append({
                     "feature_set": feature_name,
@@ -1112,6 +1147,8 @@ def evaluate_classical_models(feature_sets, Y, args):
                     "number_of_features": X.shape[1],
                     "train_accuracy": train_accuracy,
                     "test_accuracy": test_accuracy,
+                    "train_macro_f1": train_macro_f1,
+                    "test_macro_f1": test_macro_f1,
                     "fit_and_predict_seconds": time.time() - start_time,
                 })
 
@@ -1125,10 +1162,224 @@ def evaluate_classical_models(feature_sets, Y, args):
                     f"{feature_name} | {classifier_name} | "
                     f"run {run}/{args.n_runs} | "
                     f"train={train_accuracy:.4f} | "
-                    f"test={test_accuracy:.4f}"
+                    f"test={test_accuracy:.4f} | "
+                    f"test macro-F1={test_macro_f1:.4f}"
                 )
 
     return pd.DataFrame(records), predictions
+
+
+def evaluate_classical_models_by_frequency(
+    feature_sources,
+    Y,
+    args,
+):
+    """
+    Evaluate every classical model at every requested pattern threshold.
+
+    ``feature_sources`` maps a display name to a dictionary with
+    ``pattern_file``, ``image_file``, and ``thresholds`` entries. The
+    returned rows include the threshold, number of retained patterns,
+    accuracy, and macro-F1 for every model/run combination.
+    """
+    splits = classification_splits(args)
+    all_results = []
+    all_predictions = {}
+
+    for feature_name, source in feature_sources.items():
+        required = {"pattern_file", "image_file", "thresholds"}
+        missing = required.difference(source)
+        if missing:
+            missing_text = ", ".join(sorted(missing))
+            raise KeyError(
+                f"{feature_name} is missing required settings: {missing_text}"
+            )
+
+        for threshold in source["thresholds"]:
+            feature_matrix = load_feature_matrix(
+                threshold,
+                source["pattern_file"],
+                source["image_file"],
+            )
+            number_of_patterns = int(feature_matrix.shape[1])
+
+            if number_of_patterns == 0:
+                raise ValueError(
+                    f"{feature_name} has no patterns at threshold {threshold}"
+                )
+
+            threshold_results, threshold_predictions = (
+                evaluate_classical_models(
+                    {feature_name: feature_matrix},
+                    Y,
+                    args,
+                    splits=splits,
+                )
+            )
+            threshold_results.insert(1, "threshold", int(threshold))
+            threshold_results.insert(
+                2,
+                "number_of_patterns",
+                number_of_patterns,
+            )
+            all_results.append(threshold_results)
+
+            for (name, classifier, run), prediction in (
+                threshold_predictions.items()
+            ):
+                all_predictions[(name, int(threshold), classifier, run)] = (
+                    prediction
+                )
+
+    if not all_results:
+        return pd.DataFrame(), all_predictions
+
+    return pd.concat(all_results, ignore_index=True), all_predictions
+
+
+def summarize_classical_frequency_results(results_df):
+    """Aggregate the threshold experiment over the configured runs."""
+    summary = (
+        results_df
+        .groupby(["feature_set", "threshold", "number_of_patterns", "classifier"])
+        .agg(
+            train_accuracy_mean=("train_accuracy", "mean"),
+            train_accuracy_std=(
+                "train_accuracy",
+                lambda values: np.std(values, ddof=0),
+            ),
+            test_accuracy_mean=("test_accuracy", "mean"),
+            test_accuracy_std=(
+                "test_accuracy",
+                lambda values: np.std(values, ddof=0),
+            ),
+            train_macro_f1_mean=("train_macro_f1", "mean"),
+            train_macro_f1_std=(
+                "train_macro_f1",
+                lambda values: np.std(values, ddof=0),
+            ),
+            test_macro_f1_mean=("test_macro_f1", "mean"),
+            test_macro_f1_std=(
+                "test_macro_f1",
+                lambda values: np.std(values, ddof=0),
+            ),
+        )
+        .reset_index()
+    )
+
+    return summary.sort_values(
+        ["feature_set", "classifier", "threshold"]
+    ).reset_index(drop=True)
+
+
+def plot_classical_frequency_results(
+    results_df,
+    feature_name,
+    *,
+    output_prefix=None,
+    show=True,
+):
+    """
+    Plot retained pattern counts, test accuracy, and test macro-F1 by
+    frequency threshold for one simplet feature family.
+    """
+    feature_results = results_df.loc[
+        results_df["feature_set"] == feature_name
+    ].copy()
+    if feature_results.empty:
+        raise ValueError(f"No results found for {feature_name!r}")
+
+    pattern_counts = (
+        feature_results[["threshold", "number_of_patterns"]]
+        .drop_duplicates()
+        .sort_values("threshold")
+    )
+
+    figure_patterns, axis_patterns = plt.subplots(figsize=(7, 5))
+    axis_patterns.plot(
+        pattern_counts["threshold"],
+        pattern_counts["number_of_patterns"],
+        color="#b8b8b8",
+        linewidth=2.5,
+        marker="s",
+        markersize=8,
+        markerfacecolor="#b8b8b8",
+        markeredgecolor="black",
+    )
+    axis_patterns.set_xlabel("Minimum frequency")
+    axis_patterns.set_ylabel("# frequent patterns")
+    axis_patterns.set_title(
+        f"Frequent {feature_name.lower()} patterns by frequency threshold"
+    )
+    axis_patterns.grid(axis="y", color="#666666", alpha=0.7)
+    figure_patterns.tight_layout()
+
+    figures = {"number_of_patterns": (figure_patterns, axis_patterns)}
+
+    for metric, label in [
+        ("test_accuracy", "Test accuracy"),
+        ("test_macro_f1", "Test macro-F1"),
+    ]:
+        metric_summary = (
+            feature_results
+            .groupby(["classifier", "threshold"])[metric]
+            .agg(
+                mean="mean",
+                std=lambda values: np.std(values, ddof=0),
+            )
+            .reset_index()
+        )
+
+        figure_metric, axis_metric = plt.subplots(figsize=(8, 5))
+        for classifier_name, classifier_results in metric_summary.groupby(
+            "classifier", sort=True
+        ):
+            classifier_results = classifier_results.sort_values("threshold")
+            axis_metric.errorbar(
+                classifier_results["threshold"],
+                classifier_results["mean"],
+                yerr=classifier_results["std"],
+                marker="o",
+                linewidth=2,
+                markersize=6,
+                capsize=4,
+                label=classifier_name,
+            )
+
+        axis_metric.set_xlabel("Minimum frequency")
+        axis_metric.set_ylabel(label)
+        axis_metric.set_title(
+            f"{label} by frequency threshold ({feature_name})"
+        )
+        axis_metric.set_ylim(0.0, 1.05)
+        axis_metric.grid(axis="y", alpha=0.4)
+        axis_metric.legend()
+        figure_metric.tight_layout()
+        figures[metric] = (figure_metric, axis_metric)
+
+    if output_prefix is not None:
+        output_prefix = Path(output_prefix)
+        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        figure_patterns.savefig(
+            f"{output_prefix}_number_of_patterns_by_frequency.png",
+            dpi=600,
+            bbox_inches="tight",
+        )
+        figures["test_accuracy"][0].savefig(
+            f"{output_prefix}_test_accuracy_by_frequency.png",
+            dpi=600,
+            bbox_inches="tight",
+        )
+        figures["test_macro_f1"][0].savefig(
+            f"{output_prefix}_test_macro_f1_by_frequency.png",
+            dpi=600,
+            bbox_inches="tight",
+        )
+
+    if show:
+        plt.show()
+
+    return figures
 
 dataset_directory = "../data/coauthorship/dblp"
 dataset = load_data(dataset_directory)

@@ -638,6 +638,7 @@ def compute_tsne(
     feature_matrix: Any,
     labels: Any,
     *,
+    sample_indices: Any | None = None,
     perplexity: float = 30.0,
     svd_components: int = 50,
     max_samples: int | None = 5000,
@@ -646,9 +647,10 @@ def compute_tsne(
     """
     Return (embedding, sampled_class_ids, vertex_indices, silhouette).
 
-    TruncatedSVD first reduces a high-dimensional sparse feature matrix. The
-    silhouette score is computed before t-SNE because t-SNE can exaggerate
-    visual cluster separation.
+    If ``sample_indices`` is supplied, those same rows are selected from the
+    feature matrix and labels. This lets several calls use different feature
+    matrices while embedding the same predefined vertices. In that case,
+    ``max_samples`` is ignored.
     """
     class_ids = labels_to_class_ids(labels)
     num_vertices, num_features = feature_matrix.shape
@@ -663,39 +665,61 @@ def compute_tsne(
     if num_features == 0:
         raise ValueError("The feature matrix has no pattern columns")
 
-    vertex_indices = np.arange(num_vertices)
-    if max_samples is not None and num_vertices > max_samples:
-        if max_samples < 3:
-            raise ValueError("max_samples must be at least 3")
+    if sample_indices is not None:
+        vertex_indices = np.asarray(sample_indices)
+        if vertex_indices.ndim != 1:
+            raise ValueError("sample_indices must be one-dimensional")
+        if not np.issubdtype(vertex_indices.dtype, np.integer):
+            raise TypeError("sample_indices must contain integer row indices")
 
-        unique_labels, label_counts = np.unique(
-            class_ids, return_counts=True
-        )
-        can_stratify = (
-            unique_labels.size <= max_samples
-            and unique_labels.size <= num_vertices - max_samples
-            and np.all(label_counts >= 2)
-        )
-        if can_stratify:
-            vertex_indices, _ = train_test_split(
-                vertex_indices,
-                train_size=max_samples,
-                stratify=class_ids,
-                random_state=random_state,
-            )
-        else:
-            random = np.random.default_rng(random_state)
-            vertex_indices = random.choice(
-                vertex_indices,
-                size=max_samples,
-                replace=False,
-            )
+        vertex_indices = vertex_indices.astype(np.intp, copy=False)
+        if vertex_indices.size != 2000:
+            raise ValueError("sample_indices must contain exactly 2000 indices")
+        if np.unique(vertex_indices).size != vertex_indices.size:
+            raise ValueError("sample_indices must not contain duplicates")
+        if np.any(vertex_indices < 0) or np.any(vertex_indices >= num_vertices):
+            raise IndexError("sample_indices contains an out-of-range row index")
 
-        vertex_indices = np.sort(vertex_indices)
+        # Keep the caller's order so every feature matrix is embedded from the
+        # exact same ordered sample.
         feature_matrix = feature_matrix[vertex_indices]
         class_ids = class_ids[vertex_indices]
-        num_vertices = max_samples
-        print(f"Using {num_vertices} sampled vertices for t-SNE")
+        num_vertices = vertex_indices.size
+        print(f"Using {num_vertices} predefined vertices for t-SNE")
+    else:
+        vertex_indices = np.arange(num_vertices)
+        if max_samples is not None and num_vertices > max_samples:
+            if max_samples < 3:
+                raise ValueError("max_samples must be at least 3")
+
+            unique_labels, label_counts = np.unique(
+                class_ids, return_counts=True
+            )
+            can_stratify = (
+                unique_labels.size <= max_samples
+                and unique_labels.size <= num_vertices - max_samples
+                and np.all(label_counts >= 2)
+            )
+            if can_stratify:
+                vertex_indices, _ = train_test_split(
+                    vertex_indices,
+                    train_size=max_samples,
+                    stratify=class_ids,
+                    random_state=random_state,
+                )
+            else:
+                random = np.random.default_rng(random_state)
+                vertex_indices = random.choice(
+                    vertex_indices,
+                    size=max_samples,
+                    replace=False,
+                )
+
+            vertex_indices = np.sort(vertex_indices)
+            feature_matrix = feature_matrix[vertex_indices]
+            class_ids = class_ids[vertex_indices]
+            num_vertices = max_samples
+            print(f"Using {num_vertices} sampled vertices for t-SNE")
 
     max_components = min(
         svd_components,
@@ -751,6 +775,7 @@ def plot_tsne(
     feature_matrix: Any,
     labels: Any,
     *,
+    sample_indices: Any | None = None,
     output_file: str | Path | None = None,
     perplexity: float = 30.0,
     svd_components: int = 50,
@@ -759,19 +784,17 @@ def plot_tsne(
     show: bool = True,
     mode: str = "labeled",
 ):
+    """Compute and plot a label-colored t-SNE embedding."""
     plt.rcParams.update({
-        "font.size": 20,          # default font size
-        "axes.titlesize": 20,     # title
-        "axes.labelsize": 20,     # axis labels
-        # "xtick.labelsize": 14,    # x tick labels
-        # "ytick.labelsize": 14,    # y tick labels
-        # "legend.fontsize": 14,    # legend entries
+        "font.size": 20,
+        "axes.titlesize": 20,
+        "axes.labelsize": 20,
         "legend.title_fontsize": 20,
     })
-    """Compute and plot a label-colored t-SNE embedding."""
     embedding, class_ids, vertex_indices, score = compute_tsne(
         feature_matrix,
         labels,
+        sample_indices=sample_indices,
         perplexity=perplexity,
         svd_components=svd_components,
         max_samples=max_samples,
@@ -790,21 +813,17 @@ def plot_tsne(
             label=f"Label {class_id}",
         )
 
-    # title = f"t-SNE of {mode}-based features"
-    # if score is not None:
-    #     title += f"\nPre-t-SNE silhouette by label: {score:.3f}"
-    #     print(f"Pre-t-SNE silhouette score by label: {score:.3f}")
-
-    # axis.set_title(title)
-    # axis.set_xlabel("t-SNE 1")
-    # axis.set_ylabel("t-SNE 2")
-    # axis.legend(title="Vertex label", bbox_to_anchor=(1.02, 1), loc="upper left")
     figure.tight_layout()
 
     if output_file is not None:
         output_file = Path(output_file)
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        figure.savefig(output_file, dpi=1200, bbox_inches="tight", format = "pdf")
+        figure.savefig(
+            output_file,
+            dpi=1200,
+            bbox_inches="tight",
+            format="pdf",
+        )
         print(f"Saved plot to {output_file}")
 
     if show:
@@ -812,22 +831,53 @@ def plot_tsne(
 
     return embedding, vertex_indices, figure, axis
 
-def get_split(Y, p=0.2):
-    # Same validation/test split helper used in train_val.py.
-    from random import sample, shuffle
+# def get_split(Y, p=0.2):
+#     # Same validation/test split helper used in train_val.py.
+#     from random import sample, shuffle
 
-    Y = Y.tolist()
-    N, nclass = len(Y), len(set(Y))
-    D = [[] for _ in range(nclass)]
+#     Y = Y.tolist()
+#     N, nclass = len(Y), len(set(Y))
+#     D = [[] for _ in range(nclass)]
 
-    for i, y in enumerate(Y):
-        D[y].append(i)
+#     for i, y in enumerate(Y):
+#         D[y].append(i)
 
-    k = int(N * p / nclass)
-    val_idx = torch.cat(
-        [torch.LongTensor(sample(idxs, k)) for idxs in D]
-    ).tolist()
-    test_idx = list(set(range(N)) - set(val_idx))
+#     k = int(N * p / nclass)
+#     val_idx = torch.cat(
+#         [torch.LongTensor(sample(idxs, k)) for idxs in D]
+#     ).tolist()
+#     test_idx = list(set(range(N)) - set(val_idx))
+
+#     return val_idx, test_idx
+
+def get_split(Y, p):
+    import numpy as np
+    import torch
+
+    if isinstance(Y, torch.Tensor):
+        Y = Y.detach().cpu().numpy()
+
+    Y = np.asarray(Y)
+
+    if Y.ndim == 2:
+        labels = Y.argmax(axis=1)
+    else:
+        labels = Y
+
+    rng = np.random.default_rng(42)
+
+    val_idx = []
+    test_idx = []
+
+    for c in np.unique(labels):
+        idxs = np.flatnonzero(labels == c)
+        rng.shuffle(idxs)
+
+        n = len(idxs)
+        k = min(int(n * p), n - 1)
+
+        val_idx.extend(idxs[:k].tolist())
+        test_idx.extend(idxs[k:].tolist())
 
     return val_idx, test_idx
 
@@ -840,7 +890,8 @@ def train_and_extract_features(feature_matrix, Y, G, args):
     The features are the input to model.convs[-1], i.e. the tensor
     immediately before the final Linear classifier.
     """
-    X = torch.FloatTensor(feature_matrix.toarray()).cuda()
+    # X = torch.FloatTensor(feature_matrix.toarray()).cuda()
+    X = feature_matrix
 
     test_accs = []
     best_val_accs = []

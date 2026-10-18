@@ -125,17 +125,26 @@ def load_data(d):
         feature_simplet.pickle
         labels.pickle
     """
-    with open(os.path.join(d, "hypergraph.pickle"), "rb") as handle:
+    with open(os.path.join(d, "hypergraph.pkl"), "rb") as handle:
         hypergraph = pickle.load(handle)
         print("number of hyperedges is", len(hypergraph))
 
     with open(
-        os.path.join(d, "feature_simplet.pickle"), "rb"
+        os.path.join(d, "OpenAlex.features.pkl"), "rb"
     ) as handle:
         features = pickle.load(handle).todense()
 
-    with open(os.path.join(d, "labels.pickle"), "rb") as handle:
-        labels = onehot(pickle.load(handle))
+    with open(os.path.join(d, 'labels.pkl'), 'rb') as handle:
+        raw_labels = pickle.load(handle)
+
+    raw_labels = np.asarray(raw_labels)
+
+    print("Label shape:", raw_labels.shape)
+    print("Unique classes:", len(np.unique(raw_labels)))
+    print("Unique values:", np.unique(raw_labels))
+
+    labels = onehot(raw_labels)
+
 
     return {
         "hypergraph": hypergraph,
@@ -443,7 +452,7 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def load_feature_matrix(threshold, pattern_file, image_file):
+def load_feature_matrix(dataset, threshold, pattern_file, image_file):
     """
     Load the feature matrix saved for one frequency threshold.
     """
@@ -1431,13 +1440,3 @@ def plot_classical_frequency_results(
         plt.show()
 
     return figures
-
-dataset_directory = "../data/coauthorship/dblp"
-dataset = load_data(dataset_directory)
-
-feature_matrix, patterns, frequencies = build_feature_matrix(
-    data=dataset,
-    pattern_file="/data/cs.aau.dk/tungkvt/Nhi/FreSCo_label/output/node_classification/AMiner/rerun1/AMiner_freq_100_minDim_0_maxSize_12",
-    image_file="/data/cs.aau.dk/tungkvt/Nhi/FreSCo_label/output/node_classification/AMiner/rerun1/AMiner_freq_100_minDim_0_maxSize_12occMap",
-    min_frequency=200,
-)
